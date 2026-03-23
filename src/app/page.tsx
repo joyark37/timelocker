@@ -19,7 +19,7 @@ interface Operation {
 
 const publicClient = createPublicClient({
   chain: mainnet,
-  transport: http(),
+  transport: http('https://go.getblock.us/35be685f5db54d64a8b42a908ee504d0'),
 })
 
 const SUPPORTED_PROPOSAL_IDS = [
