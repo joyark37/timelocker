@@ -1,12 +1,12 @@
 'use client'
 
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { Address, formatEther, formatUnits } from 'viem'
+import { Address, formatEther } from 'viem'
 import { createPublicClient, http } from 'viem'
-import { mainnet } from 'viem/chains'
+import { base } from 'viem/chains'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
-import { TIMELOCK_ABI, TIMELOCK_ADDRESS, ROLES, OperationState, OperationStateLabels, OperationStateColors } from '@/lib/timelock'
+import { TIMELOCK_ABI, TIMELOCK_ADDRESS, ROLES, CHAIN_ID, RPC_URL, MULTICALL3_ADDRESS, OperationState, OperationStateLabels, OperationStateColors } from '@/lib/timelock'
 
 interface Operation {
   id: string
@@ -27,8 +27,8 @@ interface ContractInfo {
 }
 
 const publicClient = createPublicClient({
-  chain: mainnet,
-  transport: http('https://go.getblock.us/35be685f5db54d64a8b42a908ee504d0'),
+  chain: { ...base, id: CHAIN_ID },
+  transport: http(RPC_URL),
 })
 
 function formatDelay(seconds: bigint): string {
@@ -175,6 +175,10 @@ function ContractInfoCard({ info }: { info: ContractInfo }) {
             <span className="text-zinc-500 text-sm">Contract Address</span>
             <p className="font-mono text-xs text-zinc-300 break-all">{TIMELOCK_ADDRESS}</p>
           </div>
+          <div>
+            <span className="text-zinc-500 text-sm">Network</span>
+            <p className="text-zinc-300">Base Mainnet</p>
+          </div>
           {hasDelayInfo && (
             <>
               <div>
@@ -272,6 +276,31 @@ function StatsCard({ stats }: {
   )
 }
 
+// Multicall3 contract ABI
+const MULTICALL3_ABI = [
+  {
+    inputs: [{
+      name: 'calls',
+      type: 'tuple[]',
+      components: [
+        { name: 'target', type: 'address' },
+        { name: 'callData', type: 'bytes' },
+      ]
+    }],
+    name: 'aggregate3',
+    outputs: [{
+      name: 'returnData',
+      type: 'tuple[]',
+      components: [
+        { name: 'success', type: 'bool' },
+        { name: 'returnData', type: 'bytes' },
+      ]
+    }],
+    stateMutability: 'payable',
+    type: 'function',
+  },
+] as const
+
 // Event ABIs for getLogs
 const CALL_SCHEDULED_ABI = {
   type: 'event',
@@ -331,65 +360,61 @@ async function getLogsInBatches(
   return allLogs
 }
 
-async function getContractInfo(): Promise<ContractInfo> {
+// Use batched contract reads via Promise.all
+async function getContractInfoMulticall(): Promise<ContractInfo> {
   const proposerRole = ROLES.PROPOSER as `0x${string}`
   const executorRole = ROLES.EXECUTOR as `0x${string}`
   const cancellerRole = ROLES.CANCELLER as `0x${string}`
-  
-  // Try to get delay info, but be graceful if functions don't exist
-  let delay = 0n
-  let minDelay = 0n
-  let maxDelay = 0n
-  
-  try {
-    const [delayResult, minDelayResult, maxDelayResult] = await Promise.all([
-      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getDelay' }).catch(() => 0n),
-      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'minimumDelay' }).catch(() => 0n),
-      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'maximumDelay' }).catch(() => 0n),
-    ])
-    delay = delayResult as bigint
-    minDelay = minDelayResult as bigint
-    maxDelay = maxDelayResult as bigint
-  } catch (e) {
-    console.warn('Failed to get delay info:', e)
-  }
 
   let proposerCount = 0n
   let executorCount = 0n
   let cancellerCount = 0n
-  
+  let delay = 0n
+  let minDelay = 0n
+  let maxDelay = 0n
+
   try {
-    const [pc, ec, cc] = await Promise.all([
+    // Batch all calls together
+    const [pc, ec, cc, d, md, xd] = await Promise.all([
       publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [proposerRole] }).catch(() => 0n),
       publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [executorRole] }).catch(() => 0n),
       publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [cancellerRole] }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getDelay' }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'minimumDelay' }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'maximumDelay' }).catch(() => 0n),
     ])
     proposerCount = pc as bigint
     executorCount = ec as bigint
     cancellerCount = cc as bigint
+    delay = d as bigint
+    minDelay = md as bigint
+    maxDelay = xd as bigint
   } catch (e) {
-    console.warn('Failed to get role counts:', e)
+    console.warn('Failed to get contract info:', e)
   }
 
   const proposers: string[] = []
   const executors: string[] = []
   const cancellers: string[] = []
 
-  for (let i = 0n; i < proposerCount; i++) {
+  // Get proposers (limit to first 10 to avoid too many calls)
+  for (let i = 0n; i < proposerCount && i < 10n; i++) {
     try {
       const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [proposerRole, i] })
       proposers.push(addr as string)
     } catch {}
   }
 
-  for (let i = 0n; i < executorCount; i++) {
+  // Get executors (limit to first 10)
+  for (let i = 0n; i < executorCount && i < 10n; i++) {
     try {
       const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [executorRole, i] })
       executors.push(addr as string)
     } catch {}
   }
 
-  for (let i = 0n; i < cancellerCount; i++) {
+  // Get cancellers (limit to first 10)
+  for (let i = 0n; i < cancellerCount && i < 10n; i++) {
     try {
       const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [cancellerRole, i] })
       cancellers.push(addr as string)
@@ -403,12 +428,22 @@ export default function Home() {
   const { isConnected } = useAccount()
   const [cancelId, setCancelId] = useState<string | null>(null)
   const [proposals, setProposals] = useState<{op: Operation; state: OperationState}[]>([])
-  const [contractInfo, setContractInfo] = useState<ContractInfo | null>(null)
+  const [contractInfo, setContractInfo] = useState<ContractInfo>({ delay: 0n, minDelay: 0n, maxDelay: 0n, proposers: [], executors: [], cancellers: [] })
   const [stats, setStats] = useState({ scheduled: 0, executed: 0, cancelled: 0, pending: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [lastFetch, setLastFetch] = useState<number>(0)
 
+  // Rate limiting: only fetch once on mount (no auto-refresh to save RPC calls)
   useEffect(() => {
+    // Prevent rapid consecutive calls
+    const now = Date.now()
+    if (now - lastFetch < 10000) { // 10 second cooldown
+      setLoading(false)
+      return
+    }
+    setLastFetch(now)
+
     let mounted = true
 
     async function fetchData() {
@@ -417,20 +452,20 @@ export default function Home() {
       try {
         setError(null)
         
-        // Get contract info
-        if (!contractInfo) {
+        // Get contract info (only once)
+        if (contractInfo.proposers.length === 0 && contractInfo.executors.length === 0) {
           try {
-            const info = await getContractInfo()
+            const info = await getContractInfoMulticall()
             if (mounted) setContractInfo(info)
           } catch (e) {
             console.warn('Failed to get contract info:', e)
           }
         }
         
-        // Use a fixed recent block range
-        const LATEST_BLOCK = 21500000n
-        const fromBlock = LATEST_BLOCK - 1500n
-        const toBlock = LATEST_BLOCK
+        // Get block from last 1 hour (Base ~12s block time, ~300 blocks/hour)
+        const block = await publicClient.getBlock()
+        const fromBlock = block.number - 300n // ~1 hour of blocks
+        const toBlock = block.number
         
         // Fetch events in batches
         const [scheduledLogs, cancelledLogs, executedLogs] = await Promise.all([
@@ -444,7 +479,7 @@ export default function Home() {
           scheduled: scheduledLogs.length,
           executed: executedLogs.length,
           cancelled: cancelledLogs.length,
-          pending: 0, // Will be calculated below
+          pending: 0,
         })
 
         // Build sets
@@ -456,7 +491,7 @@ export default function Home() {
           .filter(e => !cancelledIds.has(e.args.id) && !executedIds.has(e.args.id))
           .map(e => e.args.id as string)
 
-        // Get operation details
+        // Get operation details for pending operations
         const results = await Promise.all(
           pendingIds.slice(-20).map(async (id) => {
             try {
@@ -515,13 +550,11 @@ export default function Home() {
     }
 
     fetchData()
-    const interval = setInterval(fetchData, 30000)
     
     return () => {
       mounted = false
-      clearInterval(interval)
     }
-  }, [contractInfo])
+  }, []) // Empty dependency array = only run once on mount
 
   const { data: cancelData, writeContract: cancelWrite } = useWriteContract()
   const { isLoading: isCanceling } = useWaitForTransactionReceipt({ 
@@ -556,9 +589,7 @@ export default function Home() {
 
       <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
         {/* Contract Info */}
-        <ContractInfoCard 
-          info={contractInfo || { delay: 0n, minDelay: 0n, maxDelay: 0n, proposers: [], executors: [], cancellers: [] }} 
-        />
+        <ContractInfoCard info={contractInfo} />
 
         {/* Stats */}
         <StatsCard stats={stats} />
@@ -566,7 +597,7 @@ export default function Home() {
         {/* Pending Proposals */}
         <div>
           <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <span>📝</span> Pending Proposals
+            <span>📝</span> Pending Proposals (Last 1 Hour)
           </h2>
           
           {loading ? (
@@ -582,7 +613,7 @@ export default function Home() {
           ) : pendingProposals.length === 0 ? (
             <div className="text-center py-12 bg-zinc-900/50 rounded-lg border border-zinc-800">
               <p className="text-4xl mb-4">✅</p>
-              <p className="text-zinc-400 font-medium">No pending proposals</p>
+              <p className="text-zinc-400 font-medium">No pending proposals in the last hour</p>
               <p className="text-zinc-500 text-sm mt-2">
                 The Timelock queue is empty. All scheduled operations have been executed or cancelled.
               </p>
@@ -604,8 +635,8 @@ export default function Home() {
 
         {/* Footer */}
         <div className="text-center text-zinc-600 text-sm pt-8">
+          <p>Network: <span className="font-medium">Base Mainnet</span></p>
           <p>Monitoring: <span className="font-mono">{TIMELOCK_ADDRESS}</span></p>
-          <p className="mt-1">Auto-refreshes every 30 seconds</p>
         </div>
       </main>
     </div>
