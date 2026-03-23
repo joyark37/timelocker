@@ -463,15 +463,21 @@ export default function Home() {
         }
         
         // Get block from last 1 hour (Base ~12s block time, ~300 blocks/hour)
+        // QuickNode free tier limits eth_getLogs to 5 blocks max, so we reduce range
         const block = await publicClient.getBlock()
         const fromBlock = block.number - 300n // ~1 hour of blocks
         const toBlock = block.number
         
-        // Fetch events in batches
+        // Batch size for getLogs (QuickNode limit is 5 blocks)
+        const BATCH_SIZE = 5n
+        
+        console.log(`Fetching blocks ${fromBlock} to ${toBlock} in batches of ${BATCH_SIZE}`)
+        
+        // Fetch events in batches (QuickNode limit is 5 blocks per request)
         const [scheduledLogs, cancelledLogs, executedLogs] = await Promise.all([
-          getLogsInBatches(publicClient, CALL_SCHEDULED_ABI, fromBlock, toBlock),
-          getLogsInBatches(publicClient, CANCELLED_ABI, fromBlock, toBlock),
-          getLogsInBatches(publicClient, CALL_EXECUTED_ABI, fromBlock, toBlock),
+          getLogsInBatches(publicClient, CALL_SCHEDULED_ABI, fromBlock, toBlock, BATCH_SIZE),
+          getLogsInBatches(publicClient, CANCELLED_ABI, fromBlock, toBlock, BATCH_SIZE),
+          getLogsInBatches(publicClient, CALL_EXECUTED_ABI, fromBlock, toBlock, BATCH_SIZE),
         ])
 
         // Set stats
