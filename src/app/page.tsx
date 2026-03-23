@@ -462,16 +462,14 @@ export default function Home() {
           }
         }
         
-        // Get block from last 1 hour (Base ~12s block time, ~300 blocks/hour)
-        // QuickNode free tier limits eth_getLogs to 5 blocks max, so we reduce range
-        const block = await publicClient.getBlock()
-        const fromBlock = block.number - 300n // ~1 hour of blocks
-        const toBlock = block.number
-        
-        // Batch size for getLogs (QuickNode limit is 5 blocks)
+        // Get current block and query recent 20 blocks (~4 minutes on Base)
+        // This needs only 4 requests with QuickNode's 5-block limit
+        const currentBlock = await publicClient.getBlock()
+        const fromBlock = currentBlock.number - 20n // Last ~4 minutes
+        const toBlock = currentBlock.number
         const BATCH_SIZE = 5n
         
-        console.log(`Fetching blocks ${fromBlock} to ${toBlock} in batches of ${BATCH_SIZE}`)
+        console.log(`Fetching blocks ${fromBlock} to ${toBlock} (~4 min range)`)
         
         // Fetch events in batches (QuickNode limit is 5 blocks per request)
         const [scheduledLogs, cancelledLogs, executedLogs] = await Promise.all([
@@ -603,7 +601,7 @@ export default function Home() {
         {/* Pending Proposals */}
         <div>
           <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
-            <span>📝</span> Pending Proposals (Last 1 Hour)
+            <span>📝</span> Pending Proposals (Last ~4 Minutes)
           </h2>
           
           {loading ? (
@@ -619,9 +617,9 @@ export default function Home() {
           ) : pendingProposals.length === 0 ? (
             <div className="text-center py-12 bg-zinc-900/50 rounded-lg border border-zinc-800">
               <p className="text-4xl mb-4">✅</p>
-              <p className="text-zinc-400 font-medium">No pending proposals in the last hour</p>
+              <p className="text-zinc-400 font-medium">No recent pending proposals</p>
               <p className="text-zinc-500 text-sm mt-2">
-                The Timelock queue is empty. All scheduled operations have been executed or cancelled.
+                No pending proposals in the last ~4 minutes. Try refreshing or check if the proposal was just submitted.
               </p>
             </div>
           ) : (
