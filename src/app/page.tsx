@@ -177,8 +177,7 @@ const CALL_EXECUTED_ABI = {
 
 async function getLogsInBatches(
   client: typeof publicClient,
-  eventAbi: typeof CALL_SCHEDULED_ABI,
-  address: string,
+  eventAbi: any,
   fromBlock: bigint,
   toBlock: bigint,
   batchSize: bigint = 1000n
@@ -190,7 +189,7 @@ async function getLogsInBatches(
     
     try {
       const logs = await client.getLogs({
-        address,
+        address: TIMELOCK_ADDRESS,
         event: eventAbi,
         fromBlock: start,
         toBlock: end,
@@ -229,9 +228,9 @@ export default function Home() {
         
         // Fetch events in batches
         const [scheduledLogs, cancelledLogs, executedLogs] = await Promise.all([
-          getLogsInBatches(publicClient, CALL_SCHEDULED_ABI, TIMELOCK_ADDRESS, fromBlock, toBlock),
-          getLogsInBatches(publicClient, CANCELLED_ABI, TIMELOCK_ADDRESS, fromBlock, toBlock),
-          getLogsInBatches(publicClient, CALL_EXECUTED_ABI, TIMELOCK_ADDRESS, fromBlock, toBlock),
+          getLogsInBatches(publicClient, CALL_SCHEDULED_ABI, fromBlock, toBlock),
+          getLogsInBatches(publicClient, CANCELLED_ABI, fromBlock, toBlock),
+          getLogsInBatches(publicClient, CALL_EXECUTED_ABI, fromBlock, toBlock),
         ])
 
         console.log('Events:', scheduledLogs.length, 'scheduled,', cancelledLogs.length, 'cancelled,', executedLogs.length, 'executed')
