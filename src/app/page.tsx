@@ -2,11 +2,11 @@
 
 import { useState, useEffect } from 'react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
-import { Address, formatEther } from 'viem'
+import { Address, formatEther, formatUnits } from 'viem'
 import { createPublicClient, http } from 'viem'
 import { mainnet } from 'viem/chains'
 import { ConnectButton } from '@rainbow-me/rainbowkit'
-import { TIMELOCK_ABI, TIMELOCK_ADDRESS, OperationState, OperationStateLabels, OperationStateColors } from '@/lib/timelock'
+import { TIMELOCK_ABI, TIMELOCK_ADDRESS, ROLES, OperationState, OperationStateLabels, OperationStateColors } from '@/lib/timelock'
 
 interface Operation {
   id: string
@@ -17,10 +17,31 @@ interface Operation {
   prevId: string
 }
 
+interface ContractInfo {
+  delay: bigint
+  minDelay: bigint
+  maxDelay: bigint
+  proposers: string[]
+  executors: string[]
+  cancellers: string[]
+}
+
 const publicClient = createPublicClient({
   chain: mainnet,
   transport: http('https://go.getblock.us/35be685f5db54d64a8b42a908ee504d0'),
 })
+
+function formatDelay(seconds: bigint): string {
+  const secs = Number(seconds)
+  if (secs < 60) return `${secs} seconds`
+  if (secs < 3600) return `${Math.floor(secs / 60)} minutes`
+  if (secs < 86400) return `${Math.floor(secs / 3600)} hours`
+  return `${Math.floor(secs / 86400)} days`
+}
+
+function truncateAddress(addr: string) {
+  return `${addr.slice(0, 6)}...${addr.slice(-4)}`
+}
 
 function ProposalCard({ 
   op, 
@@ -35,7 +56,6 @@ function ProposalCard({
 }) {
   const [expanded, setExpanded] = useState(false)
   const isPending = state === OperationState.Pending
-  const isReady = state === OperationState.Ready
 
   const formatDate = (timestamp: bigint) => {
     if (timestamp === 0n) return 'N/A'
@@ -54,10 +74,6 @@ function ProposalCard({
     if (days > 0) return `${days}d ${hours}h`
     if (hours > 0) return `${hours}h ${mins}m`
     return `${mins}m`
-  }
-
-  const truncateAddress = (addr: string) => {
-    return `${addr.slice(0, 6)}...${addr.slice(-4)}`
   }
 
   const decodeData = (data: string) => {
@@ -144,6 +160,100 @@ function ProposalCard({
   )
 }
 
+function ContractInfoCard({ info }: { info: ContractInfo }) {
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+      <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <span>📋</span> Contract Information
+      </h3>
+      
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-3">
+          <div>
+            <span className="text-zinc-500 text-sm">Contract Address</span>
+            <p className="font-mono text-xs text-zinc-300 break-all">{TIMELOCK_ADDRESS}</p>
+          </div>
+          <div>
+            <span className="text-zinc-500 text-sm">Current Delay</span>
+            <p className="text-zinc-300">{formatDelay(info.delay)}</p>
+          </div>
+          <div>
+            <span className="text-zinc-500 text-sm">Delay Range</span>
+            <p className="text-zinc-300">{formatDelay(info.minDelay)} - {formatDelay(info.maxDelay)}</p>
+          </div>
+        </div>
+
+        <div className="space-y-3">
+          <div>
+            <span className="text-zinc-500 text-sm">Proposers ({info.proposers.length})</span>
+            <div className="mt-1 space-y-1">
+              {info.proposers.slice(0, 3).map((addr, i) => (
+                <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
+              ))}
+              {info.proposers.length > 3 && (
+                <p className="text-xs text-zinc-500">+{info.proposers.length - 3} more</p>
+              )}
+            </div>
+          </div>
+          <div>
+            <span className="text-zinc-500 text-sm">Executors ({info.executors.length})</span>
+            <div className="mt-1 space-y-1">
+              {info.executors.slice(0, 3).map((addr, i) => (
+                <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
+              ))}
+              {info.executors.length > 3 && (
+                <p className="text-xs text-zinc-500">+{info.executors.length - 3} more</p>
+              )}
+            </div>
+          </div>
+          <div>
+            <span className="text-zinc-500 text-sm">Cancellers ({info.cancellers.length})</span>
+            <div className="mt-1 space-y-1">
+              {info.cancellers.slice(0, 3).map((addr, i) => (
+                <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
+              ))}
+              {info.cancellers.length > 3 && (
+                <p className="text-xs text-zinc-500">+{info.cancellers.length - 3} more</p>
+              )}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function StatsCard({ stats }: { 
+  stats: { scheduled: number; executed: number; cancelled: number; pending: number }
+}) {
+  return (
+    <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
+      <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
+        <span>📊</span> Operation Statistics
+      </h3>
+      
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+        <div className="text-center p-3 bg-zinc-800/50 rounded-lg">
+          <p className="text-2xl font-bold text-amber-400">{stats.pending}</p>
+          <p className="text-xs text-zinc-500">Pending</p>
+        </div>
+        <div className="text-center p-3 bg-zinc-800/50 rounded-lg">
+          <p className="text-2xl font-bold text-emerald-400">{stats.executed}</p>
+          <p className="text-xs text-zinc-500">Executed</p>
+        </div>
+        <div className="text-center p-3 bg-zinc-800/50 rounded-lg">
+          <p className="text-2xl font-bold text-red-400">{stats.cancelled}</p>
+          <p className="text-xs text-zinc-500">Cancelled</p>
+        </div>
+        <div className="text-center p-3 bg-zinc-800/50 rounded-lg">
+          <p className="text-2xl font-bold text-zinc-400">{stats.scheduled}</p>
+          <p className="text-xs text-zinc-500">Total Scheduled</p>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Event ABIs for getLogs
 const CALL_SCHEDULED_ABI = {
   type: 'event',
@@ -203,28 +313,80 @@ async function getLogsInBatches(
   return allLogs
 }
 
+async function getContractInfo(): Promise<ContractInfo> {
+  const proposerRole = ROLES.PROPOSER as `0x${string}`
+  const executorRole = ROLES.EXECUTOR as `0x${string}`
+  const cancellerRole = ROLES.CANCELLER as `0x${string}`
+  
+  const [delay, minDelay, maxDelay, proposerCount, executorCount, cancellerCount] = await Promise.all([
+    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getDelay' }),
+    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'minimumDelay' }),
+    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'maximumDelay' }),
+    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [proposerRole] }),
+    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [executorRole] }),
+    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [cancellerRole] }),
+  ])
+
+  const proposers: string[] = []
+  const executors: string[] = []
+  const cancellers: string[] = []
+
+  for (let i = 0n; i < (proposerCount as bigint); i++) {
+    try {
+      const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [proposerRole, i] })
+      proposers.push(addr as string)
+    } catch {}
+  }
+
+  for (let i = 0n; i < (executorCount as bigint); i++) {
+    try {
+      const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [executorRole, i] })
+      executors.push(addr as string)
+    } catch {}
+  }
+
+  for (let i = 0n; i < (cancellerCount as bigint); i++) {
+    try {
+      const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [cancellerRole, i] })
+      cancellers.push(addr as string)
+    } catch {}
+  }
+
+  return { delay: delay as bigint, minDelay: minDelay as bigint, maxDelay: maxDelay as bigint, proposers, executors, cancellers }
+}
+
 export default function Home() {
   const { isConnected } = useAccount()
   const [cancelId, setCancelId] = useState<string | null>(null)
   const [proposals, setProposals] = useState<{op: Operation; state: OperationState}[]>([])
+  const [contractInfo, setContractInfo] = useState<ContractInfo | null>(null)
+  const [stats, setStats] = useState({ scheduled: 0, executed: 0, cancelled: 0, pending: 0 })
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
   useEffect(() => {
     let mounted = true
 
-    async function fetchProposals() {
+    async function fetchData() {
       if (!mounted) return
       
       try {
         setError(null)
         
-        // Use a fixed recent block range (getBlockNumber seems to fail on GetBlock)
-        const LATEST_BLOCK = 21500000n  // Recent Ethereum block
+        // Get contract info
+        if (!contractInfo) {
+          try {
+            const info = await getContractInfo()
+            if (mounted) setContractInfo(info)
+          } catch (e) {
+            console.warn('Failed to get contract info:', e)
+          }
+        }
+        
+        // Use a fixed recent block range
+        const LATEST_BLOCK = 21500000n
         const fromBlock = LATEST_BLOCK - 1500n
         const toBlock = LATEST_BLOCK
-        
-        console.log('Fetching blocks:', fromBlock, 'to', toBlock)
         
         // Fetch events in batches
         const [scheduledLogs, cancelledLogs, executedLogs] = await Promise.all([
@@ -233,7 +395,13 @@ export default function Home() {
           getLogsInBatches(publicClient, CALL_EXECUTED_ABI, fromBlock, toBlock),
         ])
 
-        console.log('Events:', scheduledLogs.length, 'scheduled,', cancelledLogs.length, 'cancelled,', executedLogs.length, 'executed')
+        // Set stats
+        setStats({
+          scheduled: scheduledLogs.length,
+          executed: executedLogs.length,
+          cancelled: cancelledLogs.length,
+          pending: 0, // Will be calculated below
+        })
 
         // Build sets
         const cancelledIds = new Set(cancelledLogs.map(e => e.args.id))
@@ -243,8 +411,6 @@ export default function Home() {
         const pendingIds = scheduledLogs
           .filter(e => !cancelledIds.has(e.args.id) && !executedIds.has(e.args.id))
           .map(e => e.args.id as string)
-
-        console.log('Pending IDs:', pendingIds)
 
         // Get operation details
         const results = await Promise.all(
@@ -280,7 +446,6 @@ export default function Home() {
               }
               return null
             } catch (e) {
-              console.warn('Failed to get operation:', id, e)
               return null
             }
           })
@@ -291,11 +456,12 @@ export default function Home() {
         
         if (mounted) {
           setProposals(validResults)
+          setStats(s => ({ ...s, pending: validResults.length }))
         }
       } catch (err) {
-        console.error('Failed to fetch proposals:', err)
+        console.error('Failed to fetch data:', err)
         if (mounted) {
-          setError(err instanceof Error ? err.message : 'Failed to fetch proposals')
+          setError(err instanceof Error ? err.message : 'Failed to fetch data')
         }
       } finally {
         if (mounted) {
@@ -304,14 +470,14 @@ export default function Home() {
       }
     }
 
-    fetchProposals()
-    const interval = setInterval(fetchProposals, 30000)
+    fetchData()
+    const interval = setInterval(fetchData, 30000)
     
     return () => {
       mounted = false
       clearInterval(interval)
     }
-  }, [])
+  }, [contractInfo])
 
   const { data: cancelData, writeContract: cancelWrite } = useWriteContract()
   const { isLoading: isCanceling } = useWaitForTransactionReceipt({ 
@@ -344,58 +510,57 @@ export default function Home() {
         </div>
       </header>
 
-      <main className="max-w-5xl mx-auto px-4 py-8">
-        <div className="mb-6">
-          <h2 className="text-lg font-semibold mb-2">Pending Proposals</h2>
-          <p className="text-zinc-500 text-sm">
-            Monitoring: <span className="font-mono text-zinc-400">{TIMELOCK_ADDRESS}</span>
-          </p>
-        </div>
+      <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
+        {/* Contract Info */}
+        {contractInfo && <ContractInfoCard info={contractInfo} />}
 
-        {loading ? (
-          <div className="text-center py-16 text-zinc-500">
-            <p className="text-4xl mb-4">⏳</p>
-            <p>Loading proposals...</p>
-          </div>
-        ) : error ? (
-          <div className="text-center py-16 text-red-400">
-            <p className="text-4xl mb-4">⚠️</p>
-            <p>Error: {error}</p>
-          </div>
-        ) : pendingProposals.length === 0 ? (
-          <div className="text-center py-16 text-zinc-500">
-            <p className="text-4xl mb-4">📭</p>
-            <p>No pending proposals in recent blocks</p>
-          </div>
-        ) : (
-          <div className="space-y-3">
-            {pendingProposals.map(({ op, state }) => (
-              <ProposalCard
-                key={op.id}
-                op={op}
-                state={state}
-                onCancel={() => handleCancel(op.id)}
-                cancelling={cancelId === op.id && isCanceling}
-              />
-            ))}
-          </div>
-        )}
+        {/* Stats */}
+        <StatsCard stats={stats} />
 
-        {proposals.length > 0 && (
-          <div className="mt-8">
-            <h3 className="text-sm font-medium text-zinc-500 mb-3">All Operations</h3>
-            <div className="space-y-2">
-              {proposals.map(({ op, state }) => (
-                <div key={op.id} className="flex items-center justify-between text-sm bg-zinc-900/50 p-2 rounded">
-                  <span className="font-mono text-zinc-400 text-xs">{op.id}</span>
-                  <span className={`px-2 py-0.5 rounded text-xs ${OperationStateColors[state]}`}>
-                    {OperationStateLabels[state]}
-                  </span>
-                </div>
+        {/* Pending Proposals */}
+        <div>
+          <h2 className="text-lg font-semibold mb-4 flex items-center gap-2">
+            <span>📝</span> Pending Proposals
+          </h2>
+          
+          {loading ? (
+            <div className="text-center py-16 text-zinc-500">
+              <p className="text-4xl mb-4">⏳</p>
+              <p>Loading...</p>
+            </div>
+          ) : error ? (
+            <div className="text-center py-16 text-red-400">
+              <p className="text-4xl mb-4">⚠️</p>
+              <p>Error: {error}</p>
+            </div>
+          ) : pendingProposals.length === 0 ? (
+            <div className="text-center py-12 bg-zinc-900/50 rounded-lg border border-zinc-800">
+              <p className="text-4xl mb-4">✅</p>
+              <p className="text-zinc-400 font-medium">No pending proposals</p>
+              <p className="text-zinc-500 text-sm mt-2">
+                The Timelock queue is empty. All scheduled operations have been executed or cancelled.
+              </p>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              {pendingProposals.map(({ op, state }) => (
+                <ProposalCard
+                  key={op.id}
+                  op={op}
+                  state={state}
+                  onCancel={() => handleCancel(op.id)}
+                  cancelling={cancelId === op.id && isCanceling}
+                />
               ))}
             </div>
-          </div>
-        )}
+          )}
+        </div>
+
+        {/* Footer */}
+        <div className="text-center text-zinc-600 text-sm pt-8">
+          <p>Monitoring: <span className="font-mono">{TIMELOCK_ADDRESS}</span></p>
+          <p className="mt-1">Auto-refreshes every 30 seconds</p>
+        </div>
       </main>
     </div>
   )
