@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useEffect, use } from 'react'
+import { useState, useEffect } from 'react'
 import { useAccount, useWriteContract, useWaitForTransactionReceipt } from 'wagmi'
 import { Address, formatEther } from 'viem'
 import { createPublicClient, http } from 'viem'
@@ -21,14 +21,6 @@ const publicClient = createPublicClient({
   chain: mainnet,
   transport: http('https://go.getblock.us/35be685f5db54d64a8b42a908ee504d0'),
 })
-
-const SUPPORTED_PROPOSAL_IDS = [
-  '0x0000000000000000000000000000000000000000000000000000000000000001',
-  '0x0000000000000000000000000000000000000000000000000000000000000002',
-  '0x0000000000000000000000000000000000000000000000000000000000000003',
-  '0x0000000000000000000000000000000000000000000000000000000000000004',
-  '0x0000000000000000000000000000000000000000000000000000000000000005',
-]
 
 function ProposalCard({ 
   op, 
@@ -152,19 +144,112 @@ function ProposalCard({
   )
 }
 
+// Event ABIs for getLogs
+const CALL_SCHEDULED_ABI = {
+  type: 'event',
+  name: 'CallScheduled',
+  inputs: [
+    { indexed: true, name: 'id', type: 'bytes32' },
+    { indexed: false, name: 'predecessor', type: 'bytes32' },
+    { indexed: false, name: 'hash', type: 'bytes32' },
+    { indexed: false, name: 'detail', type: 'tuple(bytes32 target, uint256 value, bytes data, bytes32 predecessor, bytes32 salt)' },
+    { indexed: false, name: 'before', type: 'uint256' },
+  ],
+} as const
+
+const CANCELLED_ABI = {
+  type: 'event',
+  name: 'Cancelled',
+  inputs: [
+    { indexed: true, name: 'id', type: 'bytes32' },
+    { indexed: false, name: 'hash', type: 'bytes32' },
+  ],
+} as const
+
+const CALL_EXECUTED_ABI = {
+  type: 'event',
+  name: 'CallExecuted',
+  inputs: [
+    { indexed: true, name: 'id', type: 'bytes32' },
+    { indexed: false, name: 'hash', type: 'bytes32' },
+  ],
+} as const
+
+async function getLogsInBatches(
+  client: typeof publicClient,
+  eventAbi: typeof CALL_SCHEDULED_ABI,
+  address: string,
+  fromBlock: bigint,
+  toBlock: bigint,
+  batchSize: bigint = 1000n
+): Promise<any[]> {
+  const allLogs: any[] = []
+  
+  for (let start = fromBlock; start < toBlock; start += batchSize) {
+    const end = start + batchSize > toBlock ? toBlock : start + batchSize
+    
+    try {
+      const logs = await client.getLogs({
+        address,
+        event: eventAbi,
+        fromBlock: start,
+        toBlock: end,
+      })
+      allLogs.push(...logs)
+    } catch (e) {
+      console.warn(`Failed to fetch logs from ${start} to ${end}:`, e)
+    }
+  }
+  
+  return allLogs
+}
+
 export default function Home() {
   const { isConnected } = useAccount()
-  const [proposalIds] = useState(SUPPORTED_PROPOSAL_IDS)
   const [cancelId, setCancelId] = useState<string | null>(null)
   const [proposals, setProposals] = useState<{op: Operation; state: OperationState}[]>([])
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
 
-  // Fetch proposals
   useEffect(() => {
+    let mounted = true
+
     async function fetchProposals() {
+      if (!mounted) return
+      
       try {
+        setError(null)
+        
+        // Use a fixed recent block range (getBlockNumber seems to fail on GetBlock)
+        const LATEST_BLOCK = 21500000n  // Recent Ethereum block
+        const fromBlock = LATEST_BLOCK - 1500n
+        const toBlock = LATEST_BLOCK
+        
+        console.log('Fetching blocks:', fromBlock, 'to', toBlock)
+        
+        // Fetch events in batches
+        const [scheduledLogs, cancelledLogs, executedLogs] = await Promise.all([
+          getLogsInBatches(publicClient, CALL_SCHEDULED_ABI, TIMELOCK_ADDRESS, fromBlock, toBlock),
+          getLogsInBatches(publicClient, CANCELLED_ABI, TIMELOCK_ADDRESS, fromBlock, toBlock),
+          getLogsInBatches(publicClient, CALL_EXECUTED_ABI, TIMELOCK_ADDRESS, fromBlock, toBlock),
+        ])
+
+        console.log('Events:', scheduledLogs.length, 'scheduled,', cancelledLogs.length, 'cancelled,', executedLogs.length, 'executed')
+
+        // Build sets
+        const cancelledIds = new Set(cancelledLogs.map(e => e.args.id))
+        const executedIds = new Set(executedLogs.map(e => e.args.id))
+
+        // Filter to pending operations
+        const pendingIds = scheduledLogs
+          .filter(e => !cancelledIds.has(e.args.id) && !executedIds.has(e.args.id))
+          .map(e => e.args.id as string)
+
+        console.log('Pending IDs:', pendingIds)
+
+        // Get operation details
         const results = await Promise.all(
-          proposalIds.map(async (id) => {
+          pendingIds.slice(-20).map(async (id) => {
             try {
               const [op, state] = await Promise.all([
                 publicClient.readContract({
@@ -180,38 +265,55 @@ export default function Home() {
                   args: [id as Address],
                 }),
               ])
-              
-              return {
-                op: {
-                  id,
-                  target: op[2] as string,
-                  value: op[3] as bigint,
-                  data: op[4] as string,
-                  eta: op[5] as bigint,
-                  prevId: op[1] as string,
-                },
-                state: state as OperationState,
+
+              if (state === OperationState.Pending || state === OperationState.Ready) {
+                return {
+                  op: {
+                    id,
+                    target: op[2] as string,
+                    value: op[3] as bigint,
+                    data: op[4] as string,
+                    eta: op[5] as bigint,
+                    prevId: op[1] as string,
+                  },
+                  state: state as OperationState,
+                }
               }
-            } catch {
+              return null
+            } catch (e) {
+              console.warn('Failed to get operation:', id, e)
               return null
             }
           })
         )
 
-        setProposals(results.filter(Boolean) as {op: Operation; state: OperationState}[])
-      } catch (error) {
-        console.error('Failed to fetch proposals:', error)
+        const validResults = results.filter(Boolean) as {op: Operation; state: OperationState}[]
+        validResults.sort((a, b) => Number(a.op.eta - b.op.eta))
+        
+        if (mounted) {
+          setProposals(validResults)
+        }
+      } catch (err) {
+        console.error('Failed to fetch proposals:', err)
+        if (mounted) {
+          setError(err instanceof Error ? err.message : 'Failed to fetch proposals')
+        }
       } finally {
-        setLoading(false)
+        if (mounted) {
+          setLoading(false)
+        }
       }
     }
 
     fetchProposals()
     const interval = setInterval(fetchProposals, 30000)
-    return () => clearInterval(interval)
-  }, [proposalIds])
+    
+    return () => {
+      mounted = false
+      clearInterval(interval)
+    }
+  }, [])
 
-  // Cancel mutation
   const { data: cancelData, writeContract: cancelWrite } = useWriteContract()
   const { isLoading: isCanceling } = useWaitForTransactionReceipt({ 
     hash: cancelData 
@@ -256,10 +358,15 @@ export default function Home() {
             <p className="text-4xl mb-4">⏳</p>
             <p>Loading proposals...</p>
           </div>
+        ) : error ? (
+          <div className="text-center py-16 text-red-400">
+            <p className="text-4xl mb-4">⚠️</p>
+            <p>Error: {error}</p>
+          </div>
         ) : pendingProposals.length === 0 ? (
           <div className="text-center py-16 text-zinc-500">
             <p className="text-4xl mb-4">📭</p>
-            <p>No pending proposals</p>
+            <p>No pending proposals in recent blocks</p>
           </div>
         ) : (
           <div className="space-y-3">

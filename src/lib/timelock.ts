@@ -1,5 +1,6 @@
 // OpenZeppelin TimelockController ABI
 export const TIMELOCK_ABI = [
+  // View functions
   {
     inputs: [{ name: 'id', type: 'bytes32' }],
     name: 'getOperation',
@@ -29,13 +30,6 @@ export const TIMELOCK_ABI = [
     type: 'function',
   },
   {
-    inputs: [{ name: 'id', type: 'bytes32' }],
-    name: 'cancel',
-    outputs: [],
-    stateMutability: 'nonpayable',
-    type: 'function',
-  },
-  {
     inputs: [
       { name: 'target', type: 'address' },
       { name: 'value', type: 'uint256' },
@@ -47,6 +41,44 @@ export const TIMELOCK_ABI = [
     outputs: [{ name: 'id', type: 'bytes32' }],
     stateMutability: 'pure',
     type: 'function',
+  },
+  // Cancel function
+  {
+    inputs: [{ name: 'id', type: 'bytes32' }],
+    name: 'cancel',
+    outputs: [],
+    stateMutability: 'nonpayable',
+    type: 'function',
+  },
+  // Events for querying
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, name: 'id', type: 'bytes32' },
+      { indexed: false, name: 'predecessor', type: 'bytes32' },
+      { indexed: false, name: 'hash', type: 'bytes32' },
+      { indexed: false, name: 'detail', type: 'tuple(bytes32 target, uint256 value, bytes data, bytes32 predecessor, bytes32 salt)' },
+      { indexed: false, name: 'before', type: 'uint256' },
+    ],
+    name: 'CallScheduled',
+    type: 'event',
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, name: 'id', type: 'bytes32' },
+      { indexed: false, name: 'hash', type: 'bytes32' },
+    ],
+    name: 'Cancelled',
+    type: 'event',
+  },
+  {
+    anonymous: false,
+    inputs: [
+      { indexed: true, name: 'id', type: 'bytes32' },
+    ],
+    name: 'CallExecuted',
+    type: 'event',
   },
 ] as const
 
