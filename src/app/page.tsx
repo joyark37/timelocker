@@ -161,6 +161,8 @@ function ProposalCard({
 }
 
 function ContractInfoCard({ info }: { info: ContractInfo }) {
+  const hasDelayInfo = info.delay > 0n
+  
   return (
     <div className="bg-zinc-900 border border-zinc-800 rounded-lg p-4">
       <h3 className="text-lg font-semibold mb-4 flex items-center gap-2">
@@ -173,23 +175,31 @@ function ContractInfoCard({ info }: { info: ContractInfo }) {
             <span className="text-zinc-500 text-sm">Contract Address</span>
             <p className="font-mono text-xs text-zinc-300 break-all">{TIMELOCK_ADDRESS}</p>
           </div>
-          <div>
-            <span className="text-zinc-500 text-sm">Current Delay</span>
-            <p className="text-zinc-300">{formatDelay(info.delay)}</p>
-          </div>
-          <div>
-            <span className="text-zinc-500 text-sm">Delay Range</span>
-            <p className="text-zinc-300">{formatDelay(info.minDelay)} - {formatDelay(info.maxDelay)}</p>
-          </div>
+          {hasDelayInfo && (
+            <>
+              <div>
+                <span className="text-zinc-500 text-sm">Current Delay</span>
+                <p className="text-zinc-300">{formatDelay(info.delay)}</p>
+              </div>
+              <div>
+                <span className="text-zinc-500 text-sm">Delay Range</span>
+                <p className="text-zinc-300">{formatDelay(info.minDelay)} - {formatDelay(info.maxDelay)}</p>
+              </div>
+            </>
+          )}
         </div>
 
         <div className="space-y-3">
           <div>
             <span className="text-zinc-500 text-sm">Proposers ({info.proposers.length})</span>
             <div className="mt-1 space-y-1">
-              {info.proposers.slice(0, 3).map((addr, i) => (
-                <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
-              ))}
+              {info.proposers.length > 0 ? (
+                info.proposers.slice(0, 3).map((addr, i) => (
+                  <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
+                ))
+              ) : (
+                <p className="text-xs text-zinc-500">None found</p>
+              )}
               {info.proposers.length > 3 && (
                 <p className="text-xs text-zinc-500">+{info.proposers.length - 3} more</p>
               )}
@@ -198,9 +208,13 @@ function ContractInfoCard({ info }: { info: ContractInfo }) {
           <div>
             <span className="text-zinc-500 text-sm">Executors ({info.executors.length})</span>
             <div className="mt-1 space-y-1">
-              {info.executors.slice(0, 3).map((addr, i) => (
-                <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
-              ))}
+              {info.executors.length > 0 ? (
+                info.executors.slice(0, 3).map((addr, i) => (
+                  <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
+                ))
+              ) : (
+                <p className="text-xs text-zinc-500">None found</p>
+              )}
               {info.executors.length > 3 && (
                 <p className="text-xs text-zinc-500">+{info.executors.length - 3} more</p>
               )}
@@ -209,9 +223,13 @@ function ContractInfoCard({ info }: { info: ContractInfo }) {
           <div>
             <span className="text-zinc-500 text-sm">Cancellers ({info.cancellers.length})</span>
             <div className="mt-1 space-y-1">
-              {info.cancellers.slice(0, 3).map((addr, i) => (
-                <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
-              ))}
+              {info.cancellers.length > 0 ? (
+                info.cancellers.slice(0, 3).map((addr, i) => (
+                  <p key={i} className="font-mono text-xs text-zinc-400">{truncateAddress(addr)}</p>
+                ))
+              ) : (
+                <p className="text-xs text-zinc-500">None found</p>
+              )}
               {info.cancellers.length > 3 && (
                 <p className="text-xs text-zinc-500">+{info.cancellers.length - 3} more</p>
               )}
@@ -318,41 +336,67 @@ async function getContractInfo(): Promise<ContractInfo> {
   const executorRole = ROLES.EXECUTOR as `0x${string}`
   const cancellerRole = ROLES.CANCELLER as `0x${string}`
   
-  const [delay, minDelay, maxDelay, proposerCount, executorCount, cancellerCount] = await Promise.all([
-    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getDelay' }),
-    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'minimumDelay' }),
-    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'maximumDelay' }),
-    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [proposerRole] }),
-    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [executorRole] }),
-    publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [cancellerRole] }),
-  ])
+  // Try to get delay info, but be graceful if functions don't exist
+  let delay = 0n
+  let minDelay = 0n
+  let maxDelay = 0n
+  
+  try {
+    const [delayResult, minDelayResult, maxDelayResult] = await Promise.all([
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getDelay' }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'minimumDelay' }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'maximumDelay' }).catch(() => 0n),
+    ])
+    delay = delayResult as bigint
+    minDelay = minDelayResult as bigint
+    maxDelay = maxDelayResult as bigint
+  } catch (e) {
+    console.warn('Failed to get delay info:', e)
+  }
+
+  let proposerCount = 0n
+  let executorCount = 0n
+  let cancellerCount = 0n
+  
+  try {
+    const [pc, ec, cc] = await Promise.all([
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [proposerRole] }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [executorRole] }).catch(() => 0n),
+      publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMemberCount', args: [cancellerRole] }).catch(() => 0n),
+    ])
+    proposerCount = pc as bigint
+    executorCount = ec as bigint
+    cancellerCount = cc as bigint
+  } catch (e) {
+    console.warn('Failed to get role counts:', e)
+  }
 
   const proposers: string[] = []
   const executors: string[] = []
   const cancellers: string[] = []
 
-  for (let i = 0n; i < (proposerCount as bigint); i++) {
+  for (let i = 0n; i < proposerCount; i++) {
     try {
       const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [proposerRole, i] })
       proposers.push(addr as string)
     } catch {}
   }
 
-  for (let i = 0n; i < (executorCount as bigint); i++) {
+  for (let i = 0n; i < executorCount; i++) {
     try {
       const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [executorRole, i] })
       executors.push(addr as string)
     } catch {}
   }
 
-  for (let i = 0n; i < (cancellerCount as bigint); i++) {
+  for (let i = 0n; i < cancellerCount; i++) {
     try {
       const addr = await publicClient.readContract({ address: TIMELOCK_ADDRESS, abi: TIMELOCK_ABI, functionName: 'getRoleMember', args: [cancellerRole, i] })
       cancellers.push(addr as string)
     } catch {}
   }
 
-  return { delay: delay as bigint, minDelay: minDelay as bigint, maxDelay: maxDelay as bigint, proposers, executors, cancellers }
+  return { delay, minDelay, maxDelay, proposers, executors, cancellers }
 }
 
 export default function Home() {
@@ -512,7 +556,9 @@ export default function Home() {
 
       <main className="max-w-5xl mx-auto px-4 py-8 space-y-6">
         {/* Contract Info */}
-        {contractInfo && <ContractInfoCard info={contractInfo} />}
+        <ContractInfoCard 
+          info={contractInfo || { delay: 0n, minDelay: 0n, maxDelay: 0n, proposers: [], executors: [], cancellers: [] }} 
+        />
 
         {/* Stats */}
         <StatsCard stats={stats} />
